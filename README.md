@@ -3,18 +3,26 @@
 Requirements: PHP 8.1+ with `curl` and `mbstring`. No composer packages.
 
 ## Setup
-1. Create a database and token v ia cli or https://turso.tech/:
+1. Create a database and token via cli or https://turso.tech/:
+   ```
    turso db create pasta
    turso db show pasta --url          # libsql://pasta-<org>.turso.io
    turso db tokens create pasta
+   ```
 2. Export env vars for PHP (php-fpm `env[...]`, Apache `SetEnv`, or shell for CLI):
+   ```
    TURSO_URL=libsql://pasta-<org>.turso.io
    TURSO_TOKEN=...
+   ```
 3. Create tables + first admin (admins can mint invites):
+   ```
    php setup.php [username]
-4. Serve ONLY `public/` as the web root (keeps config/db/lib out of reach):
+   ```
+5. Serve ONLY `public/` as the web root (keeps config/db/lib out of reach):
+   ```
    php -S localhost:8080 -t public
-5. Log in, open "Invites", generate a code, send the link to a friend.
+   ```
+7. Log in, open "Invites", generate a code, send the link to a friend.
 
 ## Notes
 - Sessions are HttpOnly + SameSite=Lax (+ Secure on HTTPS). Serve over HTTPS in production.
