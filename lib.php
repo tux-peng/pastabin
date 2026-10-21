@@ -10,6 +10,10 @@ header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: same-origin');
 
+if (!is_installed() && basename($_SERVER['SCRIPT_NAME'] ?? '') !== 'install.php') {
+    header('Location: install.php'); exit;
+}
+
 const LANGS = ['plaintext','php','javascript','typescript','python','bash','sql','json','yaml','html','css','c','cpp','go','rust','java','markdown','diff'];
 
 function h($s): string { return htmlspecialchars((string)$s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
@@ -20,7 +24,7 @@ function user(): ?array {
     static $u = false;
     if ($u === false) {
         $u = null;
-        if (!empty($_SESSION['uid'])) {
+        if (!empty($_SESSION['uid']) && is_installed()) {
             $u = db('SELECT id, username, is_admin FROM users WHERE id = ?', [(int)$_SESSION['uid']])['rows'][0] ?? null;
             if (!$u) { session_destroy(); }
         }
