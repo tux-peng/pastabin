@@ -2,59 +2,68 @@
 require __DIR__ . '/../lib.php';
 $u = require_login();
 $err = '';
+$folders = user_folders($u['id']);
+
+// Folder filter: '' = all, 'none' = unfiled, otherwise a folder id.
+$filter = (string)($_GET['folder'] ?? '');
+$names  = array_column($folders, 'name', 'id');
+if ($filter !== 'none' && !isset($names[(int)$filter])) $filter = '';
+$p = ['folder_id' => $filter !== '' && $filter !== 'none' ? (int)$filter : null];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
-    $content = str_replace("\r\n", "\n", (string)($_POST['content'] ?? ''));
-    $title   = mb_substr(trim((string)($_POST['title'] ?? '')), 0, 100);
-    $lang    = in_array($_POST['language'] ?? '', LANGS, true) ? $_POST['language'] : 'plaintext';
-    $vis     = ($_POST['visibility'] ?? '') === 'private' ? 'private' : 'unlisted';
-    $ttl     = ['0' => null, '3600' => 3600, '86400' => 86400, '604800' => 604800, '2592000' => 2592000][$_POST['expires'] ?? '0'] ?? null;
-
-    if (trim($content) === '') $err = 'Paste is empty.';
-    elseif (strlen($content) > cfg('max_paste_bytes')) $err = 'Paste is too large.';
-    else {
+    [$p, $err] = paste_input($u['id']);
+    if (!$err) {
         $now = time();
         for ($try = 0; $try < 3; $try++) {
             $id = random_id();
             try {
-                db('INSERT INTO pastes(id,user_id,title,language,content,visibility,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)',
-                   [$id, $u['id'], $title ?: null, $lang, $content, $vis, $now, $ttl ? $now + $ttl : null]);
+                db('INSERT INTO pastes(id,user_id,folder_id,title,language,content,visibility,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                   [$id, $u['id'], $p['folder_id'], $p['title'], $p['language'], $p['content'], $p['visibility'], $now, $p['expires_at']]);
                 redirect('view.php?id=' . $id);
             } catch (RuntimeException $e) { if ($try === 2) $err = 'Could not save paste.'; }
         }
     }
 }
 
-$mine = db('SELECT id,title,language,visibility,created_at,expires_at FROM pastes
-            WHERE user_id=? AND (expires_at IS NULL OR expires_at>?) ORDER BY created_at DESC LIMIT 20',
-           [$u['id'], time()])['rows'];
+$where = 'user_id=? AND (expires_at IS NULL OR expires_at>?)';
+$args  = [$u['id'], time()];
+if ($filter === 'none') $where .= ' AND folder_id IS NULL';
+elseif ($filter !== '') { $where .= ' AND folder_id=?'; $args[] = (int)$filter; }
+$mine = db("SELECT id,title,language,visibility,folder_id,created_at,updated_at FROM pastes
+            WHERE $where ORDER BY created_at DESC LIMIT 100", $args)['rows'];
+
+$tab = fn(string $value, string $label) => $filter === $value
+    ? '<strong>' . h($label) . '</strong>'
+    : '<a href="index.php' . ($value === '' ? '' : '?folder=' . h($value)) . '">' . h($label) . '</a>';
 
 layout_start('New paste');
 ?>
 <form method="post" class="card">
   <?= csrf_field() ?>
   <?php if ($err): ?><div class="err"><?= h($err) ?></div><?php endif ?>
-  <label>Title (optional)</label><input type="text" name="title" maxlength="100">
-  <label>Content</label><textarea name="content" required spellcheck="false"><?= h($_POST['content'] ?? '') ?></textarea>
-  <div class="row">
-    <div><label>Language</label><select name="language"><?php foreach (LANGS as $l) echo '<option>' . h($l) . '</option>'; ?></select></div>
-    <div><label>Expires</label><select name="expires">
-      <option value="0">Never</option><option value="3600">1 hour</option><option value="86400">1 day</option>
-      <option value="604800">1 week</option><option value="2592000">30 days</option></select></div>
-    <div><label>Visibility</label><select name="visibility">
-      <option value="unlisted">Unlisted (anyone with link)</option><option value="private">Private (only you)</option></select></div>
-  </div>
+  <?php paste_form($p, $folders); ?>
   <p><button>Create paste</button></p>
 </form>
 
-<?php if ($mine): ?>
-<div class="card"><strong>Your recent pastes</strong>
-  <table><?php foreach ($mine as $p): ?>
-    <tr><td><a href="view.php?id=<?= h($p['id']) ?>"><?= h($p['title'] ?: $p['id']) ?></a></td>
-        <td class="mut"><?= h($p['language']) ?></td><td class="mut"><?= h($p['visibility']) ?></td>
-        <td class="mut"><?= h(fmt_time($p['created_at'])) ?></td></tr>
+<div class="card">
+  <div class="row" style="align-items:baseline">
+    <div><strong>Your pastes</strong><?php if ($filter !== ''): ?> <span class="mut">in <?= h($filter === 'none' ? 'no folder' : $names[(int)$filter]) ?></span><?php endif ?></div>
+    <div style="flex:0;white-space:nowrap"><a href="folders.php">Manage folders</a></div>
+  </div>
+  <p class="mut" style="display:flex;gap:14px;flex-wrap:wrap">
+    <?= $tab('', 'All') ?><?= $tab('none', 'Unfiled') ?>
+    <?php foreach ($folders as $f) echo $tab((string)$f['id'], $f['name']) . ' <span class="mut">(' . (int)$f['n'] . ')</span>'; ?>
+  </p>
+  <?php if (!$mine): ?><p class="mut">No pastes here yet.</p><?php else: ?>
+  <table><?php foreach ($mine as $m): ?>
+    <tr><td><a href="view.php?id=<?= h($m['id']) ?>"><?= h($m['title'] ?: $m['id']) ?></a></td>
+        <?php if ($filter === ''): ?><td class="mut"><?= h($names[(int)$m['folder_id']] ?? '') ?></td><?php endif ?>
+        <td class="mut"><?= h($m['language']) ?></td><td class="mut"><?= h($m['visibility']) ?></td>
+        <td class="mut"><?= h(fmt_time($m['updated_at'] ?? $m['created_at'])) ?></td>
+        <td><a href="edit.php?id=<?= h($m['id']) ?>">edit</a></td></tr>
   <?php endforeach ?></table>
+  <?php endif ?>
 </div>
-<?php endif;
+<?php
 layout_end();

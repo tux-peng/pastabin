@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 const DB_DRIVERS = ['turso' => 'Turso / libSQL', 'sqlite' => 'SQLite (local file)', 'mysql' => 'MySQL / MariaDB'];
+const SCHEMA_VERSION = 2; // bump when db_create_schema() learns a new migration
 
 /** Current config; pass an array to replace it (used by the installer to test settings before saving). */
 function config(?array $set = null): array {
@@ -147,9 +148,18 @@ function db_schema(string $driver): array {
                 language VARCHAR(32) NOT NULL DEFAULT 'plaintext',
                 content MEDIUMTEXT NOT NULL,
                 visibility VARCHAR(16) NOT NULL DEFAULT 'unlisted',
+                folder_id INT NULL,
                 created_at BIGINT NOT NULL,
+                updated_at BIGINT NULL,
                 expires_at BIGINT,
-                INDEX idx_pastes_user (user_id, created_at)) $t",
+                INDEX idx_pastes_user (user_id, created_at),
+                INDEX idx_pastes_folder (folder_id)) $t",
+            "CREATE TABLE IF NOT EXISTS folders (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                name VARCHAR(60) NOT NULL,
+                created_at BIGINT NOT NULL,
+                UNIQUE KEY uq_folders_user_name (user_id, name)) $t",
             "CREATE TABLE IF NOT EXISTS invites (
                 code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
                 created_by INT NOT NULL,
@@ -174,9 +184,17 @@ function db_schema(string $driver): array {
             language TEXT NOT NULL DEFAULT 'plaintext',
             content TEXT NOT NULL,
             visibility TEXT NOT NULL DEFAULT 'unlisted',
+            folder_id INTEGER,
             created_at INTEGER NOT NULL,
+            updated_at INTEGER,
             expires_at INTEGER)",
         "CREATE INDEX IF NOT EXISTS idx_pastes_user ON pastes(user_id, created_at DESC)",
+        "CREATE TABLE IF NOT EXISTS folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL COLLATE NOCASE,
+            created_at INTEGER NOT NULL,
+            UNIQUE(user_id, name))",
         "CREATE TABLE IF NOT EXISTS invites (
             code TEXT PRIMARY KEY,
             created_by INTEGER NOT NULL,
@@ -188,5 +206,22 @@ function db_schema(string $driver): array {
 }
 
 function db_create_schema(): void {
+    $mysql = cfg('db_driver') === 'mysql';
     foreach (db_schema((string)cfg('db_driver')) as $sql) db($sql);
+    // Columns added after the first release (fresh installs already have them from CREATE TABLE).
+    if (!db_has_column('pastes', 'folder_id')) {
+        db($mysql ? 'ALTER TABLE pastes ADD COLUMN folder_id INT NULL, ADD INDEX idx_pastes_folder (folder_id)'
+                  : 'ALTER TABLE pastes ADD COLUMN folder_id INTEGER');
+    }
+    if (!db_has_column('pastes', 'updated_at')) db('ALTER TABLE pastes ADD COLUMN updated_at ' . ($mysql ? 'BIGINT NULL' : 'INTEGER'));
+    if (!$mysql) db('CREATE INDEX IF NOT EXISTS idx_pastes_folder ON pastes(folder_id)');
+}
+
+function db_has_column(string $table, string $col): bool {
+    try { db("SELECT $col FROM $table LIMIT 0"); return true; } catch (RuntimeException) { return false; }
+}
+
+/** Bring a database created by an older version up to date (no-op when current). */
+function db_upgrade(): void {
+    if (!db_has_column('pastes', 'updated_at')) db_create_schema();
 }

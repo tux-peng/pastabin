@@ -35,6 +35,11 @@ Then create the tables + first admin: `php setup.php [username]`
 - Sessions are HttpOnly + SameSite=Lax (+ Secure on HTTPS). Serve over HTTPS in production.
 - Invites are single-use and claimed atomically; they can expire or be revoked.
 - Private pastes are visible only to the owner/admins; unlisted ones to anyone with the link.
+- Owners can edit their pastes (content, title, language, visibility, expiry, folder) and sort them
+  into personal folders. Deleting a folder keeps its pastes (they become unfiled). Admins can delete
+  any paste but only edit their own.
+- Databases created by older versions are upgraded automatically on the next request
+  (or run `php setup.php`).
 - Expired pastes are deleted lazily when requested.
 - Not included: login rate limiting beyond a small delay (add fail2ban / a reverse-proxy limit),
   password reset, and cleanup of expired pastes

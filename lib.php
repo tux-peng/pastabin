@@ -13,8 +13,14 @@ header('Referrer-Policy: same-origin');
 if (!is_installed() && basename($_SERVER['SCRIPT_NAME'] ?? '') !== 'install.php') {
     header('Location: install.php'); exit;
 }
+// Upgrade databases created by older versions; checked once per session.
+if (is_installed() && ($_SESSION['schema'] ?? 0) !== SCHEMA_VERSION) {
+    db_upgrade();
+    $_SESSION['schema'] = SCHEMA_VERSION;
+}
 
 const LANGS = ['plaintext','php','javascript','typescript','python','bash','sql','json','yaml','html','css','c','cpp','go','rust','java','markdown','diff'];
+const TTLS  = [0 => 'Never', 3600 => '1 hour', 86400 => '1 day', 604800 => '1 week', 2592000 => '30 days'];
 
 function h($s): string { return htmlspecialchars((string)$s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
 function redirect(string $to): never { header('Location: ' . $to); exit; }
@@ -54,6 +60,61 @@ function random_id(int $len = 10): string {
     return $s;
 }
 
+/** The user's folders with their count of live pastes, sorted by name. */
+function user_folders(int $uid): array {
+    return db('SELECT f.id, f.name, COUNT(p.id) AS n FROM folders f
+               LEFT JOIN pastes p ON p.folder_id = f.id AND (p.expires_at IS NULL OR p.expires_at > ?)
+               WHERE f.user_id = ? GROUP BY f.id, f.name ORDER BY f.name', [time(), $uid])['rows'];
+}
+
+/**
+ * Validate the posted paste form (see paste_form()). $keepExpiry is the current expires_at when editing.
+ * Returns [fields keyed by column name, error message or ''].
+ */
+function paste_input(int $uid, ?int $keepExpiry = null): array {
+    $exp = (string)($_POST['expires'] ?? '0');
+    $ttl = (int)$exp;
+    $f = [
+        'title'      => mb_substr(trim((string)($_POST['title'] ?? '')), 0, 100) ?: null,
+        'content'    => str_replace("\r\n", "\n", (string)($_POST['content'] ?? '')),
+        'language'   => in_array($_POST['language'] ?? '', LANGS, true) ? $_POST['language'] : 'plaintext',
+        'visibility' => ($_POST['visibility'] ?? '') === 'private' ? 'private' : 'unlisted',
+        'folder_id'  => (int)($_POST['folder_id'] ?? 0) ?: null,
+        'expires_at' => $exp === 'keep' ? $keepExpiry : ($ttl > 0 && isset(TTLS[$ttl]) ? time() + $ttl : null),
+    ];
+    if (trim($f['content']) === '')                     return [$f, 'Paste is empty.'];
+    if (strlen($f['content']) > cfg('max_paste_bytes')) return [$f, 'Paste is too large.'];
+    if ($f['folder_id'] && !db('SELECT 1 FROM folders WHERE id = ? AND user_id = ?', [$f['folder_id'], $uid])['rows']) {
+        return [$f, 'That folder no longer exists.'];
+    }
+    return [$f, ''];
+}
+
+/** Fields of the create/edit paste form, prefilled from $p. $keepExpiry adds a "keep current expiry" choice. */
+function paste_form(array $p, array $folders, ?int $keepExpiry = null): void {
+    $sel = fn($a, $b) => (string)$a === (string)$b ? ' selected' : '';
+    $exp = (string)($_POST['expires'] ?? ($keepExpiry ? 'keep' : '0'));
+    ?>
+  <label>Title (optional)</label><input type="text" name="title" maxlength="100" value="<?= h($p['title'] ?? '') ?>">
+  <label>Content</label><textarea name="content" required spellcheck="false">
+<?= h($p['content'] ?? '') ?></textarea>
+  <div class="row">
+    <div><label>Language</label><select name="language">
+      <?php foreach (LANGS as $l) echo '<option' . $sel($l, $p['language'] ?? 'plaintext') . '>' . h($l) . '</option>'; ?></select></div>
+    <div><label>Expires</label><select name="expires">
+      <?php if ($keepExpiry): ?><option value="keep"<?= $sel('keep', $exp) ?>>Keep (<?= h(fmt_time($keepExpiry)) ?>)</option><?php endif ?>
+      <?php foreach (TTLS as $s => $label) echo '<option value="' . $s . '"' . $sel($s, $exp) . '>' . h($keepExpiry && $s ? "$label from now" : $label) . '</option>'; ?></select></div>
+    <div><label>Visibility</label><select name="visibility">
+      <option value="unlisted">Unlisted (anyone with link)</option>
+      <option value="private"<?= $sel('private', $p['visibility'] ?? '') ?>>Private (only you)</option></select></div>
+    <?php if ($folders): ?>
+    <div><label>Folder</label><select name="folder_id"><option value="">No folder</option>
+      <?php foreach ($folders as $fo) echo '<option value="' . (int)$fo['id'] . '"' . $sel($fo['id'], $p['folder_id'] ?? '') . '>' . h($fo['name']) . '</option>'; ?></select></div>
+    <?php endif ?>
+  </div>
+<?php
+}
+
 function layout_start(string $title, bool $hljs = false): void {
     $u = user(); $site = cfg('site_name'); $f = flash();
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
@@ -76,6 +137,7 @@ table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:6px 8px;
     if ($hljs) echo '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">';
     echo '</head><body><header><strong><a href="index.php">' . h($site) . '</a></strong><span class="sp"></span>';
     if ($u) {
+        echo '<a href="folders.php">Folders</a>';
         if ($u['is_admin']) echo '<a href="invites.php">Invites</a>';
         echo '<span class="mut">' . h($u['username']) . '</span><a href="logout.php">Log out</a>';
     } else {
